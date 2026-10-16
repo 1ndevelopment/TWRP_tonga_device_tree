@@ -106,9 +106,6 @@ TARGET_RECOVERY_PIXEL_FORMAT := BGRA_8888
 TARGET_USERIMAGES_USE_EXT4 := true
 TARGET_USERIMAGES_USE_F2FS := true
 
-# Security patch level
-VENDOR_SECURITY_PATCH := 2021-08-01
-
 # Verified Boot
 BOARD_AVB_ENABLE := true
 BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3
@@ -120,7 +117,7 @@ TW_CRYPTO_SYSTEM_VOLD_DEBUG := true
 TW_CRYPTO_SYSTEM_VOLD_DISABLE_TIMEOUT := true
 endif
 
-# Hack: prevent anti rollback
+# TWRP keymaster/decryption version-check workaround (not AVB rollback protection)
 PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := 2099-12-31
 PLATFORM_VERSION := 16.1.0
