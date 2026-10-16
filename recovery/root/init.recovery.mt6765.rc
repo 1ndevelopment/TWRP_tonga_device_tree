@@ -1,8 +1,13 @@
 on init
+    # TODO(verify): USB configfs setup unconfirmed — FIRMWARE_DIR not set,
+    # stock *usb*.rc audit skipped. UDC name, sys.usb.controller, and
+    # configfs gadget setup need verification against stock firmware.
     setprop sys.usb.configfs 1
     setprop sys.usb.ffs.aio_compat 1
 
 on fs && property:ro.debuggable=0
+    # TODO(verify): UDC name 'musb-hdrc' is a guess for MT6765 — needs
+    # confirmation from stock vendor/etc/init/*usb*.rc
     # distinguish USB shoulde connect or not, i.e. CDP vs SDP
     write /sys/class/udc/musb-hdrc/device/cmode 2
     # set charging free due to it wait for USB activation
