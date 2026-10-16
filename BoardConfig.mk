@@ -58,6 +58,8 @@ BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
 BOARD_KERNEL_PAGESIZE := 2048
 BOARD_RAMDISK_OFFSET := 0x11a88000
 BOARD_KERNEL_TAGS_OFFSET := 0x07808000
+# TODO(verify): mkbootimg args not diffed against stock boot.img — FIRMWARE_DIR
+# not set, audit skipped. Offsets/page size/header version/cmdline unverified.
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
 BOARD_MKBOOTIMG_ARGS += --ramdisk_offset $(BOARD_RAMDISK_OFFSET)
 BOARD_MKBOOTIMG_ARGS += --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
@@ -85,6 +87,10 @@ BOARD_SUPER_PARTITION_SIZE := 9126805504 # TODO: Fix hardcoded value
 BOARD_SUPER_PARTITION_GROUPS := motorola_dynamic_partitions
 BOARD_MOTOROLA_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext vendor product
 BOARD_MOTOROLA_DYNAMIC_PARTITIONS_SIZE := 9122611200 # TODO: Fix hardcoded value
+# TODO(verify): A/B layout consistency unconfirmed — recovery.fstab shows
+# slotselect (A/B confirmed), but BOARD_MOTOROLA_DYNAMIC_PARTITIONS_SIZE is
+# nearly equal to BOARD_SUPER_PARTITION_SIZE. For classic A/B this should be
+# at most half of super minus overhead. Needs stock super.img audit.
 
 # Set FSTAB
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/etc/recovery.fstab
