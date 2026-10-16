@@ -26,6 +26,21 @@ service mtk.plpath.utils.link /system/bin/mtk_plpath_utils
     disabled
     seclabel u:r:recovery:s0
 
+service touch-diag /system/bin/sh -c "dmesg | grep -E 'ili9882|icnl9916|ts_mmi|Unknown symbol|Exec format|insmod' > /tmp/touch_dbg.log"
+    class late_start
+    user root
+    group root
+    oneshot
+    disabled
+
 on boot
     start boot-hal-1-2
     start health-hal-2-1
+
+    # Touch panel modules — load in dependency order
+    # TODO(verify): order and vermagic match unconfirmed (FIRMWARE_DIR not set)
+    insmod /vendor/lib/modules/ili9882_mmi.ko
+    insmod /vendor/lib/modules/icnl9916_tddi_mmi.ko
+
+    # Start touch diagnostic logger
+    start touch-diag
