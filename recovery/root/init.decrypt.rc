@@ -1,0 +1,95 @@
+# Trustonic TEE + keymaster stack: the only way to unwrap the metadata key of /data
+# (/data carries fileencryption=aes-256-xts:aes-256-cts:v2 + keydirectory=/metadata/vold/metadata_encryption,
+# and /metadata carries wrappedkey, so the keys are TEE-bound - a software keymaster cannot unwrap them).
+#
+# Stock starts these four services from the real /vendor partition
+# (vendor/etc/init/trustonic.rc, android.hardware.keymaster@4.1-service.trustonic.rc,
+# android.hardware.gatekeeper@1.0-service.rc, vendor.mediatek.hardware.keymaster_attestation@1.1-service.rc).
+# Recovery cannot: TWRP mounts /vendor only while it reads its props and unmounts it before
+# decrypting (partitionmanager.cpp:409-441), so the binaries, their libraries and the Trustonic
+# TAs are shipped inside this ramdisk at the same paths.
+#
+# Service names, arguments, user/group/class/interface lines are stock's. Two deliberate changes,
+# both because stock's init context does not exist in recovery:
+#   - seclabel u:r:recovery:s0 (same domain as mtk.plpath.utils.link in init.recovery.mt6765.rc);
+#   - the mobicore -r list is reduced to the TAs that exist in this device's vendor image
+#     (stock's rc names 29, this vendor image contains 11; the rest are media/sensor TAs).
+on init
+    export LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/vendor/lib64/hw:/system/lib64/hw
+    mkdir /mnt/vendor/persist 0771 system system
+
+# Stock passes --P1 /mnt/vendor/persist/mcRegistry, so the TEE filesystem path must exist before
+# mobicore starts. Recovery mounts /persist at /persist (recovery.fstab), so mount it here too.
+on early-fs
+    mount ext4 /dev/block/platform/bootdevice/by-name/persist /mnt/vendor/persist rw
+
+on post-fs
+    chown system system /mnt/vendor/persist
+    chmod 0771 /mnt/vendor/persist
+    mkdir /mnt/vendor/persist/mcRegistry 0771 system system
+    # Fires the start below only after the SFS path exists (stock has no such property; it starts
+    # these at late-fs, which is after its mount_all).
+    setprop crypto.ready 1
+
+# stock: service mobicore /vendor/bin/mcDriverDaemon --sfs-reformat --P1 /mnt/vendor/persist/mcRegistry
+service mobicore /vendor/bin/mcDriverDaemon --sfs-reformat --P1 /mnt/vendor/persist/mcRegistry \
+    -r /vendor/app/mcRegistry/06090000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/020f0000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/05120000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/05120000000000000000000000000001.drbin \
+    -r /vendor/app/mcRegistry/020b0000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/05070000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/030b0000000000000000000000000000.drbin \
+    -r /vendor/app/mcRegistry/40188311faf343488db888ad39496f9a.drbin \
+    -r /vendor/app/mcRegistry/07060000000000000000000000007169.drbin \
+    -r /vendor/app/mcRegistry/9073f03a9618383bb1856eb3f990babd.drbin \
+    -r /vendor/app/mcRegistry/5020170115e016302017012521300000.drbin
+    class main
+    user system
+    group system
+    priority -20
+    seclabel u:r:recovery:s0
+    disabled
+
+# stock: service vendor.keymaster-4-1-trustonic ... class early_hal, user system, group system drmrpc
+service vendor.keymaster-4-1-trustonic /vendor/bin/hw/android.hardware.keymaster@4.1-service.trustonic
+    class early_hal
+    user system
+    group system drmrpc
+    seclabel u:r:recovery:s0
+    disabled
+
+# stock: service vendor.gatekeeper-1-0 ... interface android.hardware.gatekeeper@1.0::IGatekeeper default
+service vendor.gatekeeper-1-0 /vendor/bin/hw/android.hardware.gatekeeper@1.0-service
+    interface android.hardware.gatekeeper@1.0::IGatekeeper default
+    class hal
+    user system
+    group system
+    seclabel u:r:recovery:s0
+    disabled
+
+# stock: service keymaster_attestation-1-1 ... interfaces 1.0 + 1.1, disabled (started on demand).
+# Recovery's init cannot honour late HIDL requests, so it is started with the rest.
+service keymaster_attestation-1-1 /vendor/bin/hw/vendor.mediatek.hardware.keymaster_attestation@1.1-service
+    interface vendor.mediatek.hardware.keymaster_attestation@1.0::IKeymasterDevice default
+    interface vendor.mediatek.hardware.keymaster_attestation@1.1::IKeymasterDevice default
+    class hal
+    user system
+    group system
+    seclabel u:r:recovery:s0
+    disabled
+
+# hwservicemanager.ready is the gate stock itself waits on (init.mt6765.rc:188); crypto.ready is
+# the fallback for the case recovery's hwservicemanager does not advertise it. Both actions are
+# idempotent, so whichever fires first wins and the other is a no-op.
+on property:hwservicemanager.ready=true
+    start mobicore
+    start vendor.keymaster-4-1-trustonic
+    start vendor.gatekeeper-1-0
+    start keymaster_attestation-1-1
+
+on property:crypto.ready=1
+    start mobicore
+    start vendor.keymaster-4-1-trustonic
+    start vendor.gatekeeper-1-0
+    start keymaster_attestation-1-1

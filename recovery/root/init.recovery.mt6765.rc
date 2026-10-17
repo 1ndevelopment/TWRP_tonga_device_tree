@@ -1,3 +1,5 @@
+import /init.decrypt.rc
+
 on init
     # Recovery uses the configfs gadget path: TWRP's recovery init.rc sets
     # sys.usb.configfs 0 in its own early-init and only builds the gadget when it

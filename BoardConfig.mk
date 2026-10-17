@@ -110,7 +110,13 @@ BOARD_AVB_ENABLE := true
 BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3
 
 # Crypto
-TW_INCLUDE_CRYPTO := false
+# Enables TWRP's FBE + metadata decryption path (-DTW_INCLUDE_FBE,
+# -DTW_INCLUDE_FBE_METADATA_DECRYPT, bootable/recovery Android.mk:335-358 short of the keymaster
+# libs). /data needs it: f2fs, fileencryption=aes-256-xts:aes-256-cts:v2 with
+# keydirectory=/metadata/vold/metadata_encryption, and /metadata is marked wrappedkey, so the keys
+# are TEE-bound. The Trustonic TEE/keymaster stack it requires is shipped in recovery/root
+# (see recovery/root/init.decrypt.rc).
+TW_INCLUDE_CRYPTO := true
 
 # TWRP keymaster/decryption version-check workaround (not AVB rollback protection)
 PLATFORM_SECURITY_PATCH := 2099-12-31

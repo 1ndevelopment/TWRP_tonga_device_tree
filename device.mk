@@ -35,3 +35,7 @@ PRODUCT_PACKAGES += \
     update_engine \
     update_verifier \
     update_engine_sideload
+
+# Recovery props the device would otherwise inherit from its own /vendor or /system build.prop
+# (recovery builds its own). DEVICE_PATH is set in BoardConfig.mk:8.
+TARGET_SYSTEM_PROP += $(DEVICE_PATH)/system.prop
