@@ -21,6 +21,7 @@ AB_OTA_PARTITIONS += \
     system
 
 BOARD_USES_RECOVERY_AS_BOOT := true
+BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
 
 # Architecture
 TARGET_ARCH := arm64
@@ -41,9 +42,6 @@ TARGET_2ND_CPU_VARIANT_RUNTIME := cortex-a53
 BOARD_USES_MTK_HARDWARE := true
 BOARD_HAS_MTK_HARDWARE := true
 
-# APEX
-DEXPREOPT_GENERATE_APEX_IMAGE := true
-
 # Bootloader
 TARGET_BOOTLOADER_BOARD_NAME := k65v1_64_bsp
 TARGET_NO_BOOTLOADER := true
@@ -52,7 +50,6 @@ TARGET_NO_BOOTLOADER := true
 TARGET_SCREEN_DENSITY := 280
 TW_MAX_BRIGHTNESS := 255
 TW_DEFAULT_BRIGHTNESS := 150
-TW_LOAD_VENDOR_MODULES := "ili9882_mmi.ko icnl9916_tddi_mmi.ko"
 
 # Kernel
 BOARD_BOOTIMG_HEADER_VERSION := 2
@@ -61,13 +58,13 @@ BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
 BOARD_KERNEL_PAGESIZE := 2048
 BOARD_RAMDISK_OFFSET := 0x11a88000
 BOARD_KERNEL_TAGS_OFFSET := 0x07808000
+# TODO(verify): mkbootimg args not diffed against stock boot.img — FIRMWARE_DIR
+# not set, audit skipped. Offsets/page size/header version/cmdline unverified.
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
 BOARD_MKBOOTIMG_ARGS += --ramdisk_offset $(BOARD_RAMDISK_OFFSET)
 BOARD_MKBOOTIMG_ARGS += --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
 BOARD_KERNEL_IMAGE_NAME := Image.gz
 BOARD_INCLUDE_DTB_IN_BOOTIMG := true
-TARGET_KERNEL_CONFIG := tonga_defconfig
-TARGET_KERNEL_SOURCE := kernel/motorola/tonga
 
 # Kernel - prebuilt
 TARGET_FORCE_PREBUILT_KERNEL := true
@@ -81,7 +78,9 @@ endif
 # Partitions
 BOARD_FLASH_BLOCK_SIZE := 131072 # (BOARD_KERNEL_PAGESIZE * 64)
 BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
-BOARD_RECOVERYIMAGE_PARTITION_SIZE := 33554432
+# Required by AOSP 9 whenever BOARD_AVB_ENABLE is set (core/Makefile:2345).
+# Stock value: system_a extent in fw/work/lpdump.txt = 1944848 sectors * 512.
+BOARD_SYSTEMIMAGE_PARTITION_SIZE := 995762176
 BOARD_HAS_LARGE_FILESYSTEM := true
 BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
 BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
@@ -91,6 +90,10 @@ BOARD_SUPER_PARTITION_SIZE := 9126805504 # TODO: Fix hardcoded value
 BOARD_SUPER_PARTITION_GROUPS := motorola_dynamic_partitions
 BOARD_MOTOROLA_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext vendor product
 BOARD_MOTOROLA_DYNAMIC_PARTITIONS_SIZE := 9122611200 # TODO: Fix hardcoded value
+# TODO(verify): A/B layout consistency unconfirmed — recovery.fstab shows
+# slotselect (A/B confirmed), but BOARD_MOTOROLA_DYNAMIC_PARTITIONS_SIZE is
+# nearly equal to BOARD_SUPER_PARTITION_SIZE. For classic A/B this should be
+# at most half of super minus overhead. Needs stock super.img audit.
 
 # Set FSTAB
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/etc/recovery.fstab
@@ -106,21 +109,21 @@ TARGET_RECOVERY_PIXEL_FORMAT := BGRA_8888
 TARGET_USERIMAGES_USE_EXT4 := true
 TARGET_USERIMAGES_USE_F2FS := true
 
-# Security patch level
-VENDOR_SECURITY_PATCH := 2021-08-01
-
 # Verified Boot
-BOARD_AVB_ENABLE := true
+# BOARD_AVB_ENABLE := true
+# BOARD_AVB_ALGORITHM := SHA256_RSA4096
 BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3
 
 # Crypto
-TW_INCLUDE_CRYPTO := false
-ifneq ($(TW_INCLUDE_CRYPTO),true)
-TW_CRYPTO_SYSTEM_VOLD_DEBUG := true
-TW_CRYPTO_SYSTEM_VOLD_DISABLE_TIMEOUT := true
-endif
+# Enables TWRP's FBE + metadata decryption path (-DTW_INCLUDE_FBE,
+# -DTW_INCLUDE_FBE_METADATA_DECRYPT, bootable/recovery Android.mk:335-358 short of the keymaster
+# libs). /data needs it: f2fs, fileencryption=aes-256-xts:aes-256-cts:v2 with
+# keydirectory=/metadata/vold/metadata_encryption, and /metadata is marked wrappedkey, so the keys
+# are TEE-bound. The Trustonic TEE/keymaster stack it requires is shipped in recovery/root
+# (see recovery/root/init.decrypt.rc).
+TW_INCLUDE_CRYPTO := true
 
-# Hack: prevent anti rollback
+# TWRP keymaster/decryption version-check workaround (not AVB rollback protection)
 PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := 2099-12-31
 PLATFORM_VERSION := 16.1.0
@@ -129,7 +132,6 @@ PLATFORM_VERSION := 16.1.0
 TW_THEME := portrait_hdpi
 TW_EXTRA_LANGUAGES := false
 TW_SCREEN_BLANK_ON_BOOT := true
-TW_INPUT_BLACKLIST := "hbtp_vm"
 TW_USE_TOOLBOX := true
 TW_INCLUDE_REPACKTOOLS := true
 TW_OVERRIDE_SYSTEM_PROPS := true

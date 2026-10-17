@@ -1,14 +1,40 @@
+import /init.decrypt.rc
+
 on init
+    # Recovery uses the configfs gadget path: TWRP's recovery init.rc sets
+    # sys.usb.configfs 0 in its own early-init and only builds the gadget when it
+    # is 1. sys.usb.controller / sys.usb.config are filled in at post-fs below.
     setprop sys.usb.configfs 1
     setprop sys.usb.ffs.aio_compat 1
 
 on fs && property:ro.debuggable=0
+    # UDC name confirmed: stock init.mt6765.usb.rc sets vendor.usb.controller to
+    # "musb-hdrc" and factory_init.rc writes "musb-hdrc" literally; this write
+    # already depends on /sys/class/udc/musb-hdrc existing.
     # distinguish USB shoulde connect or not, i.e. CDP vs SDP
     write /sys/class/udc/musb-hdrc/device/cmode 2
-    # set charging free due to it wait for USB activation
-    start adbd
 
 on post-fs
+    # USB configfs gadget bring-up.
+    # Recovery does not run the vendor USB HAL, and that HAL is the only thing that
+    # sets sys.usb.controller (stock's own rc uses vendor.usb.controller "musb-hdrc").
+    # TWRP's recovery init.rc therefore wrote an empty value:
+    #   write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    # so no UDC was ever bound -> no adb. It also only sets sys.usb.config=adb when
+    # ro.debuggable=1; set it here so release builds take the same path.
+    # Set at post-fs so TWRP's "on fs && sys.usb.configfs=1" gadget dirs and the
+    # /dev/usb-ffs/adb functionfs mount already exist. adbd then sets
+    # sys.usb.ffs.ready and TWRP's adb+configfs attach block binds the UDC.
+    setprop sys.usb.controller musb-hdrc
+    setprop sys.usb.config adb
+
+    # set charging free due to it wait for USB activation (stock comment).
+    # Started here, not in on fs: this file is imported at TWRP init.rc:6, so its
+    # on fs actions run before TWRP's "on fs && sys.usb.configfs=1" block mounts
+    # /dev/usb-ffs/adb (init.rc:149-151); adbd started earlier cannot open its
+    # functionfs and exits.
+    start adbd
+
     # Support A/B feature for emmc boot region
     symlink /dev/block/sda /dev/block/mmcblk0boot0
     symlink /dev/block/sdb /dev/block/mmcblk0boot1
@@ -26,6 +52,27 @@ service mtk.plpath.utils.link /system/bin/mtk_plpath_utils
     disabled
     seclabel u:r:recovery:s0
 
+service touch-diag /system/bin/sh -c "dmesg | grep -E 'CTS-|ILITEK|ilitek|icnl9916|ili9882|chipone|active panel|not found|Unknown symbol|version magic|disagrees about version|Exec format|insmod' > /tmp/touch_dbg.log; echo CMDLINE: >> /tmp/touch_dbg.log; cat /proc/cmdline >> /tmp/touch_dbg.log"
+    class late_start
+    user root
+    group root
+    oneshot
+    disabled
+
 on boot
     start boot-hal-1-2
     start health-hal-2-1
+
+    # Touch panel drivers: the stock tonga drivers, relinked for the recovery
+    # kernel (their vermagic is ...-g2991a7c6cb9d, the vendor partition copies
+    # are ...-gbaa59638869e and cannot be loaded by this kernel), so insmod
+    # these ramdisk copies rather than modprobe from /vendor/lib/modules.
+    # Load order does not matter: each driver self-selects the panel from the
+    # "mipi_mot_vid_*" token in /proc/cmdline and returns -1 before binding if
+    # the panel is not its own (stock loads both the same way, in
+    # init.mmi.overlay.rc).
+    insmod /vendor/lib/modules/ili9882_mmi.ko
+    insmod /vendor/lib/modules/icnl9916_tddi_mmi.ko
+
+    # Start touch diagnostic logger
+    start touch-diag

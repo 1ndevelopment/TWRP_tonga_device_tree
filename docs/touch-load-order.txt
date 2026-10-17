@@ -1,0 +1,132 @@
+TOUCH MODULE LOAD ORDER — stock vs recovery (tonga / MT6765H)
+Evidence-only; no device used.  Sources: fw/work/fs/vendor_a (stock), recovery/root (repo).
+
+===============================================================================
+1. STOCK ORDER
+===============================================================================
+file: fw/work/fs/vendor_a/lib/modules/modules.load   (loaded by AOSP libmodprobe)
+
+  mt6357-accdet.ko
+  trace_mmstat.ko
+  fpc_mtk_tee.ko
+  goodix_mtk_tee.ko
+  icnl9916_tddi_mmi.ko        <-- touch #1
+  ili9882_mmi.ko              <-- touch #2
+  nova_0flash_mmi.ko          <-- touch-adjacent module; NOT a tonga touch driver: no of:
+                                  alias, and tonga has only two LCM names (see §4)
+  abov_sar_mmi_overlay_7ch.ko
+  utags.ko
+  mmi_info.ko
+  moto_f_usbnet.ko
+  qpnp_adaptive_charge.ko
+  sensors_class.ko
+  exfat.ko
+  bt_drv_connac1x.ko
+  wmt_drv.ko
+  connfem.ko
+  fmradio_drv_mt6631.ko
+  gps_drv.ko
+  wmt_chrdev_wifi.ko
+  wlan_drv_gen4m.ko
+  fpsgo.ko
+  met.ko
+
+file: fw/work/fs/vendor_a/lib/modules/modules.dep
+  /vendor/lib/modules/icnl9916_tddi_mmi.ko:      (no dependencies)
+  /vendor/lib/modules/ili9882_mmi.ko:            (no dependencies)
+  => libmodprobe has nothing to reorder; modules.load order == insert order.
+
+===============================================================================
+2. RECOVERY (repo) ORDER
+===============================================================================
+file: recovery/root/init.recovery.mt6765.rc
+
+  on boot
+      insmod /vendor/lib/modules/ili9882_mmi.ko
+      insmod /vendor/lib/modules/icnl9916_tddi_mmi.ko
+
+Only these two modules exist in recovery/root/vendor/lib/modules/ (both relinked for the
+recovery kernel: vermagic 4.19.191-g2991a7c6cb9d; the stock ones are ...-gbaa59638869e and
+cannot be loaded by it). No mmi_info.ko / utags.ko / nova_0flash_mmi.ko are shipped — not
+needed: no module dependencies exist (verified in modules.dep), and a stock .ko could not be
+loaded anyway (vermagic).
+
+Also present in the ramdisk: vendor/firmware/ILITEK_FW_TM_9883A, plus ICNL9916.bin and
+ICNL9911.bin (added). See docs/touch-firmware-files.txt.
+
+The rc comment claiming a load order mattered was removed (the order is inert, see §3).
+insmod is deliberate: TW_LOAD_VENDOR_MODULES would load the stock modules from the mounted
+vendor partition, which do not match the recovery kernel.
+
+===============================================================================
+3. ORDER DOES NOT MATTER — the drivers self-select on the kernel cmdline
+===============================================================================
+REA/Ghidra: stock icnl9916_tddi_mmi.ko, function cts_driver_probe (.text @ 0x100004)
+String XREFs resolved from .rela.text relocations (printk + strstr + strncpy).
+
+  printk("<I>CTS-I2CDrv enter\n");
+  if (saved_command_line == NULL) { printk("<I>CTS-I2CDrv saved_command_line null!\n"); return -1; }
+  printk("<I>CTS-I2CDrv saved_command_line is %s\n", saved_command_line);
+  p = strstr(saved_command_line, "mipi_mot_vid_");
+  if (p == NULL) {
+      printk("<I>CTS-I2CDrv chipone active panel not found!\n"); return -1;
+  }
+  strncpy(panel_name, p, 0x32);
+  if (strstr(panel_name, "icnl") == NULL) {
+      printk("<I>CTS-I2CDrv Not chipone panel!\n");
+      printk("<I>CTS-I2CDrv MTK get chipone panel error\n"); return -1;
+  }
+  printk("<I>CTS-I2CDrv active_panel_name=%s\n", panel_name);
+  ... cts_probe_device() ...
+
+Stock ili9882_mmi.ko has the identical structure (same literals "mipi_mot_vid_",
+"saved_command_line is %s", "ilitek active panel not found!", "Not ilitek panel!").
+
+Consequences (confirmed):
+  cmdline token contains "icnl"   -> only icnl9916_tddi_mmi binds
+  cmdline token contains "ili"    -> only ili9882_mmi binds
+  no "mipi_mot_vid_" token at all -> BOTH return -1  => no touch
+
+The kernel only probes a device whose driver slot is empty (dev->driver == NULL), and
+each wrong driver returns -1 before binding, so neither driver can "block" the other.
+=> insmod order is irrelevant; the previous reordering fix cannot change the outcome.
+
+===============================================================================
+4. WHERE THE TOKEN COMES FROM
+===============================================================================
+grep "mipi_mot_vid_" : 0 hits in fw/out/boot.img, fw/work/boot/dtb, fw/out/dtbo.img,
+                       /chosen/bootargs.
+appended DTB /chosen/bootargs (full string):
+  console=tty0 console=ttyS0,921600n1 vmalloc=500M slub_debug=OFZPU page_owner=on swiotlb=noforce
+  androidboot.hardware=mt6765 maxcpus=8 loop.max_part=7 firmware_class.path=/vendor/firmware
+stock boot.img header cmdline : bootopt=64S3,32N2,64N2 buildvariant=user
+BoardConfig BOARD_KERNEL_CMDLINE : bootopt=64S3,32N2,64N2      (buildvariant dropped)
+
+inferred: the token is appended to the runtime kernel cmdline at boot by LK.
+          (LK is out of scope for this audit -> not verified.)
+inferred: if LK appends it, TWRP gets it too — the same stock LK boots both stock Android and
+          this recovery image, and the token is in none of the partitions this tree writes.
+          Still unknown until read on the device.
+check   : cat /proc/cmdline   (in TWRP and in stock; also logged to /tmp/touch_dbg.log now)
+
+Kernel LCM driver names that can legitimately appear in that token:
+  mipi_mot_vid_tm_icnl9916_652_hdp
+  mipi_mot_vid_tm_ili9883a_652_hdp
+(both present in the stock kernel AND in prebuilt/Image.gz)
+=> exactly two touch SKUs exist for tonga; the stock vendor's own per-panel configs
+   (etc/motorola/12m/: chipone-...icnl9916..., chipone-...icnl9911c..., TM655_...ilitek_tm.ini)
+   cover the same two families and nothing else (inferred).
+
+===============================================================================
+5. PANEL / dts overlay facts
+===============================================================================
+boot.img appended dtb contains NO touch-controller node.
+dtbo.img overlay : /fragment@24/__overlay__/touch@0
+    compatible = "tchip,ilitek", "novatek,NVT-ts-spi", "chipone-tddi"
+    status = "okay"          (SPI: reg=0x0, spi-max-frequency=10 MHz)
+    tpd-panel-match = ""     (empty, fragment@22)
+base dtb /touch : compatible = "goodix,touch" (placeholder, symbol "touch")
+modules.alias   : alias of:N*T*Cchipone-tddi icnl9916_tddi_mmi   (only chipone emits an of: alias)
+
+=> both SKUs carry the same compatible list, so the DT does not select the IC. The cmdline
+   token does. A stock dtbo partition must remain flashed for the overlay to apply at all.

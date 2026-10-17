@@ -1,6 +1,6 @@
 # TWRP/OFRP device tree for Motorola G Power (2022) (tonga)
 
-![gpowerimg](https://xdaforums.com/proxy.php?image=https%3A%2F%2Fmanual24.co.uk%2Fimages%2Fphones%2Fmotorola_moto_g_power_2022.png&hash=f22f6af9aa1f7f27db861af93828ed7a)
+![gpowerimg](https://manual24.co.uk/images/phones/motorola_moto_g_power_2022.png)
 
 ## SPECIFICATIONS:
 

@@ -1,0 +1,6 @@
+# Props the recovery build does not inherit from the device's own /vendor or /system build.prop
+# but that the decryption path reads.
+#
+# vold reads this one when it parses the /data FBE options (verified in stock /system/bin/vold;
+# TWRP's vold fork reads it as well). Value is the stock device's: vendor/build.prop:312.
+ro.crypto.volume.filenames_mode=aes-256-cts

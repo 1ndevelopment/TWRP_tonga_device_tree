@@ -1,0 +1,121 @@
+# Testing Guide — tonga TWRP touch/USB fix
+
+## Prerequisites
+
+- Stock firmware build number: `S3RQS32.20-42-10-9-9` (from `twrp_tonga.mk`)
+- A/B device with `slotselect` confirmed in recovery.fstab
+- Bootloader must support `fastboot boot` for safe testing
+
+## Flashing instructions
+
+**WARNING: Do NOT flash over your only working boot image.**
+
+1. **Preferred:** `fastboot boot twrp_tonga.img`
+   - Does not overwrite the current boot partition
+   - If the bootloader supports this, use it
+
+2. **Alternative (only if A/B confirmed):**
+   - Flash to the **inactive** slot only
+   - `fastboot flash boot_b twrp_tonga.img` (or `_a` if currently on `_b`)
+   - Verify current slot: `fastboot getvar current-slot`
+
+3. **Do NOT flash to both slots** unless you have a known-good backup.
+
+## Retrieving logs
+
+1. **TWRP Copy Log:**
+   - Advanced → Copy Log
+   - Saves to `/tmp/recovery.log` on the device
+   - Pull via `adb pull /tmp/recovery.log`
+
+2. **Touch diagnostic log:**
+   - The `touch-diag` service writes to `/tmp/touch_dbg.log`
+   - Pull via `adb pull /tmp/touch_dbg.log`
+   - Contains filtered dmesg plus `/proc/cmdline`:
+     `CTS-|ILITEK|ilitek|icnl9916|ili9882|chipone|active panel|not found|Unknown symbol|version magic|disagrees about version|Exec format|insmod`
+     (`CTS-` and `ILITEK` matter: the drivers' printk tags are `CTS-I2CDrv`, `CTS-Core`,
+      `CTS-Plat` and `ILITEK: …`, so a grep for the module file names alone misses them.)
+
+3. **Full dmesg (if ADB is working):**
+   - `adb shell dmesg > dmesg.log`
+
+## Symptom → cause mapping
+
+The drivers print their own reason. Find the line and read the cause off it:
+
+| dmesg line | Meaning |
+|------------|---------|
+| `<I>CTS-I2CDrv active_panel_name=…` / `… ilitek …` | cmdline gate **passed** for that driver |
+| `CTS-I2CDrv chipone active panel not found!` | no `mipi_mot_vid_*` token in `/proc/cmdline` at all |
+| `CTS-I2CDrv Not chipone panel!` | token present but is not the chipone panel — expected, harmless, for the non-matching driver (same for `Not ilitek panel!`) |
+| `CTS-Core Device hwid: %06x fwid: %04x not found` | chip answered but is not a supported part |
+| `CTS-Core Enter program mode failed` / `CTS-Core Probe device failed` | chip did not answer SPI in program mode → panel power/reset state, not a module problem |
+| `ILITEK Driver probe failed` / `ILITEK … dummy check` | same for the ilitek SKU |
+| `Unknown symbol` | missing dependency (neither module has any — unexpected) |
+| `version magic` / `disagrees about version of symbol` | the **stock** modules were loaded, i.e. `/vendor` was mounted over the ramdisk copies before `insmod` |
+| `Exec format error` | wrong firmware build / arch mismatch |
+| no `CTS-`/`ILITEK` line at all | the module never loaded → check `insmod` in dmesg |
+
+No `CTS-`/`ILITEK` line and no insmod error at all means the `touch-diag` service itself
+did not run (it is `class late_start`, started from `on boot`).
+
+## What to report back
+
+1. **Firmware build number:** `ro.build.display.id` (get via `adb shell getprop ro.build.display.id`)
+2. **Logs:** `/tmp/touch_dbg.log` and `/tmp/recovery.log`
+3. **`cat /proc/cmdline`** — must contain the `mipi_mot_vid_…` token matching the panel
+   (`…icnl9916…` or `…ili9883a…`). This is the single most useful line; it is already appended to
+   `/tmp/touch_dbg.log` after the `CMDLINE:` marker.
+4. **USB status:** `ls -l /sys/class/udc/`, `cat /config/usb_gadget/g1/UDC` (expect `musb-hdrc`),
+   and whether ADB comes up.
+5. **Touch status:** does touch input work?
+
+## Decryption (crypto)
+
+`TW_INCLUDE_CRYPTO := true` is a build change; decryption itself can only be proven on the device.
+Rationale and evidence: `docs/crypto-enable.md`.
+
+**Before flashing:** `boot_a` is 32 MiB (`fw/out/PGPT`) and stock `boot.img` is ~24 MiB. This build
+adds TWRP's keystore stack plus 3.17 MiB of Trustonic blobs under `recovery/root/vendor`. Check the
+built `recovery.img`/`twrp_tonga.img` size against 32 MiB first — `docs/crypto-enable.md` §5.1 lists
+what to drop if it does not fit.
+
+**In recovery, in this order:**
+
+1. `getprop | grep -E 'crypto.ready|ro.crypto.state'` — `crypto.ready=1` proves `init.decrypt.rc`
+   reached its `on post-fs` block, so its own start trigger fired.
+2. `ps -A | grep -E 'mcDriverDaemon|keymaster|gatekeeper'` — expect `mcDriverDaemon` plus the three
+   services (`vendor.keymaster-4-1-trustonic`, `vendor.gatekeeper-1-0`,
+   `keymaster_attestation-1-1`).
+3. `dmesg | grep -iE 'mobicore|mcDriver|kinibi|trustonic|keymaster|gatekeeper'` and
+   `ls -l /dev/mobicore*` — the Kinibi driver node must exist for `mcDriverDaemon`.
+4. `ls /mnt/vendor/persist/mcRegistry` — the SFS path stock's `--P1` points at.
+5. `getprop | grep -E '^\[(fbe|metadata)\.'` — TWRP sets `fbe.contents`, `fbe.filenames`,
+   `metadata.contents`, `metadata.filenames` while parsing the fstab (with `TW_INCLUDE_CRYPTO`).
+6. Enter the PIN/pattern on the TWRP decrypt screen, then `adb pull /tmp/recovery.log`.
+
+| symptom | meaning |
+|---------|---------|
+| `setting Key_Directory to: /metadata/vold/metadata_encryption` (`partition.cpp:1070`) | the fstab flag reached TWRP, metadata path armed |
+| no `Key_Directory` line at all | the `/data` flag did not parse — check the `;` separator in `recovery.fstab` |
+| services missing from `ps` | `init.decrypt.rc` not imported, or started before `/mnt/vendor/persist` exists |
+| missing `lib64/hw/…so` at service start | the loader asked for a module variant not shipped — report the exact name |
+| `avc: denied` for `mobicore` / `persist` / `keymaster` | SELinux (a permissive recovery hides this) |
+| TEE stack running but decryption still fails | the two offline unknowns: which gatekeeper module resolves, and whether the 11-TA list suffices (`crypto-enable.md` §5.2, §5.3) |
+
+## Known limitations
+
+- Load order is **known to be irrelevant** (both drivers self-select from the cmdline token and the
+  non-matching one returns `-1` before binding) — do not reorder `insmod` as a fix.
+- `musb_hdrc.kernel_init_done` is deliberately **not** written in recovery: decompilation shows it
+  only feeds the MUSB *host*-role worker and does not gate the UDC, so it cannot affect adb
+  (`stock-audit.md` §5.3, `docs/musb-kernel-init-done.md`).
+- The CDP/SDP meaning of `write /sys/class/udc/musb-hdrc/device/cmode 2` is unverified.
+- Whether the TDDI chip answers program-mode SPI in recovery (panel power/reset state left by the
+  bootloader) cannot be judged offline.
+- A/B dynamic partition sizes: the earlier "contradiction" is resolved (Virtual A/B, see
+  `stock-audit.md` §2).
+- mkbootimg args still not diffed against stock boot.img.
+- Crypto is enabled and the Trustonic TEE stack ships in the ramdisk, but no decryption has been
+  verified on hardware. `crypto-enable.md` §5 lists what is still open (ramdisk/boot budget, which
+  gatekeeper module the loader picks, whether the 11-TA list suffices).
