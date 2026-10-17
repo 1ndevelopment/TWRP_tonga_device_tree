@@ -70,6 +70,39 @@ did not run (it is `class late_start`, started from `on boot`).
    and whether ADB comes up.
 5. **Touch status:** does touch input work?
 
+## Decryption (crypto)
+
+`TW_INCLUDE_CRYPTO := true` is a build change; decryption itself can only be proven on the device.
+Rationale and evidence: `docs/crypto-enable.md`.
+
+**Before flashing:** `boot_a` is 32 MiB (`fw/out/PGPT`) and stock `boot.img` is ~24 MiB. This build
+adds TWRP's keystore stack plus 3.17 MiB of Trustonic blobs under `recovery/root/vendor`. Check the
+built `recovery.img`/`twrp_tonga.img` size against 32 MiB first — `docs/crypto-enable.md` §5.1 lists
+what to drop if it does not fit.
+
+**In recovery, in this order:**
+
+1. `getprop | grep -E 'crypto.ready|ro.crypto.state'` — `crypto.ready=1` proves `init.decrypt.rc`
+   reached its `on post-fs` block, so its own start trigger fired.
+2. `ps -A | grep -E 'mcDriverDaemon|keymaster|gatekeeper'` — expect `mcDriverDaemon` plus the three
+   services (`vendor.keymaster-4-1-trustonic`, `vendor.gatekeeper-1-0`,
+   `keymaster_attestation-1-1`).
+3. `dmesg | grep -iE 'mobicore|mcDriver|kinibi|trustonic|keymaster|gatekeeper'` and
+   `ls -l /dev/mobicore*` — the Kinibi driver node must exist for `mcDriverDaemon`.
+4. `ls /mnt/vendor/persist/mcRegistry` — the SFS path stock's `--P1` points at.
+5. `getprop | grep -E '^\[(fbe|metadata)\.'` — TWRP sets `fbe.contents`, `fbe.filenames`,
+   `metadata.contents`, `metadata.filenames` while parsing the fstab (with `TW_INCLUDE_CRYPTO`).
+6. Enter the PIN/pattern on the TWRP decrypt screen, then `adb pull /tmp/recovery.log`.
+
+| symptom | meaning |
+|---------|---------|
+| `setting Key_Directory to: /metadata/vold/metadata_encryption` (`partition.cpp:1070`) | the fstab flag reached TWRP, metadata path armed |
+| no `Key_Directory` line at all | the `/data` flag did not parse — check the `;` separator in `recovery.fstab` |
+| services missing from `ps` | `init.decrypt.rc` not imported, or started before `/mnt/vendor/persist` exists |
+| missing `lib64/hw/…so` at service start | the loader asked for a module variant not shipped — report the exact name |
+| `avc: denied` for `mobicore` / `persist` / `keymaster` | SELinux (a permissive recovery hides this) |
+| TEE stack running but decryption still fails | the two offline unknowns: which gatekeeper module resolves, and whether the 11-TA list suffices (`crypto-enable.md` §5.2, §5.3) |
+
 ## Known limitations
 
 - Load order is **known to be irrelevant** (both drivers self-select from the cmdline token and the
@@ -83,3 +116,6 @@ did not run (it is `class late_start`, started from `on boot`).
 - A/B dynamic partition sizes: the earlier "contradiction" is resolved (Virtual A/B, see
   `stock-audit.md` §2).
 - mkbootimg args still not diffed against stock boot.img.
+- Crypto is enabled and the Trustonic TEE stack ships in the ramdisk, but no decryption has been
+  verified on hardware. `crypto-enable.md` §5 lists what is still open (ramdisk/boot budget, which
+  gatekeeper module the loader picks, whether the 11-TA list suffices).
