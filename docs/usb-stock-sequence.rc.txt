@@ -8,6 +8,9 @@ AUXILIARY
   fw/work/fs/vendor_a/bin/hw/android.hardware.usb@1.2-service-mediatekv2   (MTK USB HAL)
   fw/work/fs/system_a/system/etc/init/hw/init.usb.configfs.rc              (AOSP, unmodified)
   recovery/root/init.recovery.mt6765.rc                                   (repo, current)
+  TWRP bootable/recovery, branch android-12.1:
+    etc/init.rc              (the recovery init.rc; imports our device rc at line 6)
+    etc/init.recovery.usb.rc (legacy android_usb path, used only when sys.usb.configfs=0)
 
 ===============================================================================
 1. STOCK SEQUENCE (init.mt6765.usb.rc)
@@ -81,23 +84,33 @@ on fs && property:ro.debuggable=0
 on boot
     … insmod touch modules …
 
-MISSING vs stock (all confirmed absent from the repo):
-  - write /sys/module/musb_hdrc/parameters/kernel_init_done 1        (stock file:2)
-  - setprop sys.usb.controller musb-hdrc                            (nothing sets it in recovery)
-  - mkdir /config/usb_gadget/g1 + descriptors + configs/b.1         (no gadget object at all)
-  - mount configfs                                                  (no rc mounts /config)
-  - mount functionfs adb /dev/usb-ffs/adb                           (stock file:83)
-  - mkdir /config/usb_gadget/g1/functions/ffs.adb                   (AOSP rc does this, needs
-                                                                     ${sys.usb.controller} later)
-  - write /config/usb_gadget/g1/UDC musb-hdrc                       (the actual bind)
-  - setprop sys.usb.config adb                                      (triggers the bind handlers)
-  - the vendor USB HAL (not shippable in recovery; it is a full HIDL service)
+WHAT TWRP'S OWN RECOVERY init.rc ALREADY DOES (confirmed, TWRP android-12.1 etc/init.rc):
+  line 21   on early-init: setprop sys.usb.configfs 0        (default = legacy gadget path)
+  line 116  on fs && property:ro.debuggable=1: setprop sys.usb.config adb
+  line 127  on fs && property:sys.usb.configfs=1:  mount configfs none /config
+  line 129      mkdir /config/usb_gadget/g1 0770 shell shell
+  line 130      write /config/usb_gadget/g1/idVendor 0x18D1
+  line 132-134  strings/0x409/{serialnumber,manufacturer,product}
+  line 135-136  mkdir functions/ffs.adb, functions/ffs.fastboot
+  line 137-138  mkdir configs/b.1, configs/b.1/strings/0x409
+  line 149-151  mkdir /dev/usb-ffs{,/adb}; mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
+  line 155  on property:sys.usb.config=adb: start adbd
+  line 201  on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1 && \
+            property:sys.usb.configfs=1:
+  line 202-205  write idProduct 0xD001; write .../configuration "adb";
+                symlink functions/ffs.adb .../configs/b.1/f1;
+                write /config/usb_gadget/g1/UDC ${sys.usb.controller}      <-- BIND
+  (line 186-192: sys.usb.config=none + configfs=1 writes UDC "none" and rm's f1)
 
-`find recovery -iname '*usb*'` returns NOTHING, and grep over recovery/ + *.mk found no
-gadget creation and no controller property. The ramdisk's generic TWRP
-`init.recovery.usb.rc` is NOT in this repo, so its contents are UNKNOWN — but note that the
-AOSP/TWRP-standard version of that file writes `${sys.usb.controller}`, which on this device
-is only ever populated by the (absent) vendor HAL.
+=> the gadget object, the functionfs mounts and the adb attach/bind all exist in recovery.
+   The ONLY inputs missing on this device are the two properties the stock vendor HAL used to
+   provide: `sys.usb.controller` (never set in recovery) and `sys.usb.config=adb` (TWRP sets it
+   only when ro.debuggable=1). Everything else in the earlier "missing" list is already there.
+
+STILL MISSING vs stock (confirmed):
+  - write /sys/module/musb_hdrc/parameters/kernel_init_done 1   (stock file:2, on early-init;
+    semantics not decompiled - see section 4)
+  - the vendor USB HAL (not shippable in recovery; it is a full HIDL service)
 
 INferred root cause: no UDC is ever bound in recovery -> no ADB, no MTP, no USB mass storage.
 Checks on device:
@@ -114,8 +127,28 @@ Checks on device:
   but the CDP/SDP meaning of the value 2 was not verified in the driver.
 - Effect of `musb_hdrc.kernel_init_done` not being written in recovery. Stock writes it in
   `on early-init` (before anything else); the parameter exists in the kernel
-  (/sys/module/musb_hdrc/parameters/). Its semantics were not decompiled.
-- Whether TWRP's built ramdisk already contains a gadget script of its own (not in this repo).
+  (/sys/module/musb_hdrc/parameters/). Its semantics were not decompiled — if 0 blocks the
+  MUSB probe, the UDC would not exist and no UDC write could succeed either.
+- ORDERING, pre-existing: TWRP's init.rc imports `/init.recovery.${ro.hardware}.rc` at line 6,
+  before its own `on fs` blocks, so this device rc's `on fs` actions run *before* TWRP mounts
+  the adb functionfs and builds the gadget. Its `start adbd` therefore fires before
+  /dev/usb-ffs/adb exists (adbd exits and relies on init's restart). The fix below is placed
+  in `on post-fs` for exactly this reason. Not changed here.
+
+===============================================================================
+5. FIX APPLIED (recovery/root/init.recovery.mt6765.rc)
+===============================================================================
+on post-fs:
+    setprop sys.usb.controller musb-hdrc      <- the value that was missing
+    setprop sys.usb.config adb                <- TWRP only sets this when ro.debuggable=1
+
+Effect: TWRP's `on fs && sys.usb.configfs=1` block builds the gadget (it runs at `on fs`,
+i.e. before this), our line makes `sys.usb.config=adb` trigger `start adbd`, adbd opens the
+mounted /dev/usb-ffs/adb and sets `sys.usb.ffs.ready=1`, and TWRP's attach block then does
+`symlink ffs.adb -> configs/b.1/f1` and `write .../UDC ${sys.usb.controller}` — which now
+resolves to a real UDC name instead of an empty string. Nothing else had to be added: the
+configfs mount, the gadget, the ffs mounts and the attach already exist in TWRP's recovery init.rc.
 
 NAME DISCIPLINE: `musb-hdrc` is a real, evidence-backed name (init.mt6765.usb.rc:65;
-/sys/class/udc/ scan path in the HAL). Any other UDC name would be invention.
+/sys/class/udc/ scan path in the HAL; factory_init.rc writes it literally). Any other UDC name
+would be invention.

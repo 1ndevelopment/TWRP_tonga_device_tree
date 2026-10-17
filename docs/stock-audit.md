@@ -284,23 +284,35 @@ vendor/etc/init/android.hardware.usb@1.2-service-mediatekv2.rc
 **Confirmed:** on stock, `sys.usb.controller` is a runtime value produced by the MTK USB HAL;
 `system/etc/init/hw/init.usb.configfs.rc` (AOSP) only *consumes* `${sys.usb.controller}`.
 
-### 5.3 Recovery gap
+### 5.3 Recovery gap — RESOLVED
 
-`recovery/root/init.recovery.mt6765.rc` (whole file) sets only
-`sys.usb.configfs 1`, `sys.usb.ffs.aio_compat 1`, writes
-`/sys/class/udc/musb-hdrc/device/cmode 2`, and `start adbd`. It **mounts no configfs, creates no
-`/config/usb_gadget/g1` gadget, mounts no functionfs, and writes no UDC**. `find recovery -iname '*usb*'`
-returns nothing, and no file in the repo creates a gadget or sets `sys.usb.controller`
-(confirmed by grep over `recovery/` and `*.mk`).
+`recovery/root/init.recovery.mt6765.rc` originally set only `sys.usb.configfs 1`,
+`sys.usb.ffs.aio_compat 1`, wrote `/sys/class/udc/musb-hdrc/device/cmode 2` and `start adbd`.
 
-**Inferred:** in recovery the vendor USB HAL is absent, so `sys.usb.controller` is unset; any
-generic recovery USB rc that writes `${sys.usb.controller}` to the UDC writes an empty value and the
-gadget is never bound → no ADB/MTP. (The built ramdisk's generic `init.recovery.usb.rc` comes from
-the TWRP common tree and is not present in this repo, so that file's content is **unknown**.)
+TWRP's own recovery rc was fetched and read (`TeamWin/android_bootable_recovery`, android-12.1,
+`etc/init.rc`), so the previously-unknown part is now confirmed: recovery **already** has the whole
+configfs path — `on fs && property:sys.usb.configfs=1` mounts configfs and builds
+`/config/usb_gadget/g1` with `functions/ffs.adb` and `configs/b.1` (`:127-138`), `on fs` mounts
+functionfs at `/dev/usb-ffs/adb` (`:149-151`), and `on property:sys.usb.config=adb &&
+property:sys.usb.ffs.ready=1 && property:sys.usb.configfs=1` symlinks `ffs.adb` into config `b.1`
+and writes the UDC (`:201-206`).
 
-**Unknown:** the effect of `write /sys/class/udc/musb-hdrc/device/cmode 2`. `cmode*` attributes exist
-in the kernel and the `[MUSB] cmode=%d, cable_mode=%d` logging is present, but the CDP/SDP semantics
-of value `2` were not verified against the driver.
+The only missing inputs were the two properties the stock vendor USB HAL used to provide:
+
+- **`sys.usb.controller`** — nothing in recovery sets it, so the UDC write above resolved to an
+  empty name and no UDC was ever bound. Stock's own rc uses `vendor.usb.controller "musb-hdrc"`
+  (`init.mt6765.usb.rc:65`) and `factory_init.rc` writes `musb-hdrc` literally.
+- **`sys.usb.config=adb`** — TWRP sets it only when `ro.debuggable=1` (`init.rc:116`), so release
+  builds never triggered the attach.
+
+Both are now set in `on post-fs` (post-fs, not `on fs`, because TWRP imports the device rc at
+`init.rc:6`, i.e. *before* its own `on fs` blocks build the gadget and mount the functionfs).
+Nothing else was added — mounting configfs, the gadget, the ffs mounts and the bind already exist.
+
+**Not changed / still unknown:** stock's `write /sys/module/musb_hdrc/parameters/kernel_init_done 1`
+(`init.mt6765.usb.rc:2`, `on early-init`) is still not written in recovery, and its semantics were
+not decompiled; and the CDP/SDP meaning of the `cmode 2` write is unverified. Device checks:
+`ls /sys/class/udc/`, `cat /config/usb_gadget/g1/UDC`, `dmesg | grep -iE 'musb|udc|gadget'`.
 
 ## 6. Checks that require the device (cannot be decided offline)
 
