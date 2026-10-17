@@ -309,9 +309,16 @@ Both are now set in `on post-fs` (post-fs, not `on fs`, because TWRP imports the
 `init.rc:6`, i.e. *before* its own `on fs` blocks build the gadget and mount the functionfs).
 Nothing else was added — mounting configfs, the gadget, the ffs mounts and the bind already exist.
 
-**Not changed / still unknown:** stock's `write /sys/module/musb_hdrc/parameters/kernel_init_done 1`
-(`init.mt6765.usb.rc:2`, `on early-init`) is still not written in recovery, and its semantics were
-not decompiled; and the CDP/SDP meaning of the `cmode 2` write is unverified. Device checks:
+**Also applied:** `start adbd` moved from `on fs` to the end of `on post-fs`. This file is imported
+at TWRP `init.rc:6`, so its `on fs` actions run before TWRP mounts the adb functionfs (`:149-151`);
+adbd started earlier cannot open its functionfs and exits.
+
+**Not changed:** the CDP/SDP meaning of `cmode 2` remains unverified. `musb_hdrc.kernel_init_done`
+(stock `init.mt6765.usb.rc:2`, `on early-init`) is deliberately **not** written: decompilation of the
+recovery kernel shows it does not gate the UDC — its only readers are six loads in the MUSB
+host-role worker, while `/sys/class/udc/<name>` comes from `usb_add_gadget_udc()` in the `musb-hdrc`
+platform probe, which never reads it (`docs/musb-kernel-init-done.md`; re-verified in
+`usb-stock-sequence.rc.txt` §4). Device checks:
 `ls /sys/class/udc/`, `cat /config/usb_gadget/g1/UDC`, `dmesg | grep -iE 'musb|udc|gadget'`.
 
 ## 6. Checks that require the device (cannot be decided offline)

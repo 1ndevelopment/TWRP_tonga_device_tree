@@ -108,9 +108,9 @@ WHAT TWRP'S OWN RECOVERY init.rc ALREADY DOES (confirmed, TWRP android-12.1 etc/
    only when ro.debuggable=1). Everything else in the earlier "missing" list is already there.
 
 STILL MISSING vs stock (confirmed):
-  - write /sys/module/musb_hdrc/parameters/kernel_init_done 1   (stock file:2, on early-init;
-    semantics not decompiled - see section 4)
   - the vendor USB HAL (not shippable in recovery; it is a full HIDL service)
+NOT NEEDED (confirmed by decompilation, see section 4):
+  - write /sys/module/musb_hdrc/parameters/kernel_init_done 1   (stock file:2, on early-init)
 
 INferred root cause: no UDC is ever bound in recovery -> no ADB, no MTP, no USB mass storage.
 Checks on device:
@@ -125,15 +125,19 @@ Checks on device:
 - Effect of `write /sys/class/udc/musb-hdrc/device/cmode 2`. The `cmode*` attributes exist
   (kernel strings `cmode`, `cmode_show`, `cmode_store`, `[MUSB] cmode=%d, cable_mode=%d`),
   but the CDP/SDP meaning of the value 2 was not verified in the driver.
-- Effect of `musb_hdrc.kernel_init_done` not being written in recovery. Stock writes it in
-  `on early-init` (before anything else); the parameter exists in the kernel
-  (/sys/module/musb_hdrc/parameters/). Its semantics were not decompiled — if 0 blocks the
-  MUSB probe, the UDC would not exist and no UDC write could succeed either.
-- ORDERING, pre-existing: TWRP's init.rc imports `/init.recovery.${ro.hardware}.rc` at line 6,
+- `musb_hdrc.kernel_init_done` — RESOLVED, no longer a gap. Stock writes it at `on early-init`
+  (file:2), but it does not gate the UDC. Decompilation of the recovery kernel (notes:
+  `docs/musb-kernel-init-done.md`) shows the parameter is a plain `int` (perm 0644) whose
+  only readers are six `ldr wN, [x28, #0xec4]` loads inside the host-role worker (`do_host_work`),
+  whereas `/sys/class/udc/<name>` is created by `usb_add_gadget_udc()` from the `musb-hdrc`
+  platform probe, which never reads it. Independently re-verified here: every access of that
+  page is a load inside that single function (VA 0xffffff80089d346c-0x89d36bc), and the nearest
+  access to the UDC call site (0xffffff80089e6d58) is 79 KB away in another function. Writing it
+  in recovery would be inert, so it is deliberately NOT written.
+- ORDERING — RESOLVED: TWRP's init.rc imports `/init.recovery.${ro.hardware}.rc` at line 6,
   before its own `on fs` blocks, so this device rc's `on fs` actions run *before* TWRP mounts
-  the adb functionfs and builds the gadget. Its `start adbd` therefore fires before
-  /dev/usb-ffs/adb exists (adbd exits and relies on init's restart). The fix below is placed
-  in `on post-fs` for exactly this reason. Not changed here.
+  the adb functionfs (init.rc:149-151) and builds the gadget. `start adbd` therefore used to fire
+  before /dev/usb-ffs/adb existed. It now runs at the end of `on post-fs` instead (section 5).
 
 ===============================================================================
 5. FIX APPLIED (recovery/root/init.recovery.mt6765.rc)
@@ -148,6 +152,11 @@ mounted /dev/usb-ffs/adb and sets `sys.usb.ffs.ready=1`, and TWRP's attach block
 `symlink ffs.adb -> configs/b.1/f1` and `write .../UDC ${sys.usb.controller}` — which now
 resolves to a real UDC name instead of an empty string. Nothing else had to be added: the
 configfs mount, the gadget, the ffs mounts and the attach already exist in TWRP's recovery init.rc.
+
+ALSO APPLIED (ordering):
+    `start adbd` moved from `on fs && property:ro.debuggable=0` to the end of `on post-fs`,
+    after the two setprops — /dev/usb-ffs/adb is mounted by then. Started earlier it could not
+    open its functionfs and exited, leaving the start to init's restart path.
 
 NAME DISCIPLINE: `musb-hdrc` is a real, evidence-backed name (init.mt6765.usb.rc:65;
 /sys/class/udc/ scan path in the HAL; factory_init.rc writes it literally). Any other UDC name

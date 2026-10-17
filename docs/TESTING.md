@@ -74,8 +74,9 @@ did not run (it is `class late_start`, started from `on boot`).
 
 - Load order is **known to be irrelevant** (both drivers self-select from the cmdline token and the
   non-matching one returns `-1` before binding) — do not reorder `insmod` as a fix.
-- `musb_hdrc.kernel_init_done` is still not written in recovery (stock writes it at `early-init`);
-  its semantics were not decompiled.
+- `musb_hdrc.kernel_init_done` is deliberately **not** written in recovery: decompilation shows it
+  only feeds the MUSB *host*-role worker and does not gate the UDC, so it cannot affect adb
+  (`stock-audit.md` §5.3, `docs/musb-kernel-init-done.md`).
 - The CDP/SDP meaning of `write /sys/class/udc/musb-hdrc/device/cmode 2` is unverified.
 - Whether the TDDI chip answers program-mode SPI in recovery (panel power/reset state left by the
   bootloader) cannot be judged offline.
