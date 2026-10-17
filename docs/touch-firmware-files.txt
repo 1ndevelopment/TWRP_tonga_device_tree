@@ -1,0 +1,82 @@
+TOUCH FIRMWARE FILES — requested names vs what is actually shipped
+Evidence-only; no device used.
+
+===============================================================================
+1. WHAT EACH STOCK TOUCH DRIVER ASKS FOR
+===============================================================================
+icnl9916_tddi_mmi.ko  (Chipone) — REA/Ghidra: cts_request_firmware @ 0x108a14
+  string refs: 0x11d99a, 0x12325d, 0x12452c
+  hw id 0x990160 -> "/vendor/firmware/ICNL9916.bin"   (name passed to request: "ICNL9916.bin")
+  hw id 0x991110 -> "/vendor/firmware/ICNL9911.bin"   (name: "ICNL9911.bin")
+  other ids      -> return 0 (no update)
+  Then cts_request_newer_firmware_from_fs(): updates the IC only if the file carries a
+  newer firmware version. If the path is not present/readable it returns 0.
+  INFERRED: this is an UPDATE path, not a probe requirement -> a missing file does not by
+  itself fail the probe (the IC keeps its factory-flashed firmware).
+
+ili9882_mmi.ko  (Ilitek) — request_firmware() with a panel-selected name.
+  Exact name strings present in the module (extracted from binary, complete list of
+  "ILITEK_FW_*" literals):
+    ILITEK_FW_TM             ILITEK_FW_TM_9882H      ILITEK_FW_TM_9882N
+    ILITEK_FW_TM_9883A       ILITEK_FW_TM_7807S      ILITEK_FW_TIANMA_9882N
+    ILITEK_FW_TXD            ILITEK_FW_TXD_9882H     ILITEK_FW_TXD_9882N
+    ILITEK_FW_TXD_7806S      ILITEK_FW_INX           ILITEK_FW_BOE
+    ILITEK_FW_CSOT           ILITEK_FW_AUO           ILITEK_FW_HLT
+    ILITEK_FW_DJ
+  Also present (SD-card manual update paths, not used in recovery):
+    /sdcard  /sdcard/ILITEK_FW  /sdcard/ILITEK_FW_AUO  /sdcard/ILITEK_FW_BOE
+    /sdcard/ILITEK_FW_CSOT  /sdcard/ILITEK_FW_DJ  /sdcard/ILITEK_FW_INX
+    /sdcard/ILITEK_FW_TIANMA_9882N  /sdcard/ILITEK_FW_TM_7807S
+  Loader messages: "Failed to open ini file at %ld, try to request_firmware",
+  "Request firmware failed, try again", "Request firmware failed after retry".
+
+===============================================================================
+2. STOCK vendor/firmware  (fw/work/fs/vendor_a/firmware/, 33 files)
+===============================================================================
+  ICNL9911.bin                 60,772 B
+  ICNL9916.bin                 66,316 B      <- Chipone ICNL9916
+  ILITEK_FW_TM_9883A          358,761 B      <- Ilitek TM 9883A
+  novatek_ts_fw.bin           118,784 B
+  novatek_ts_mp.bin           118,784 B
+  NT36xxx_MP_Setting_Criteria_6041.csv
+  AbovCapSense.BIN, fs1603s.fsm, rgx.fw, rgx.sh,
+  BT_FW.cfg, fm_cust.cfg, lib3a.ccu, mt6631_fm_v1_patch.bin, mt6631_fm_v1_coeff.bin,
+  remoteproc_scp, soc1_0_*.bin, txpowerctrl*.cfg, WIFI_RAM_CODE_soc1_0_1_1.bin,
+  wifi*.cfg, WMT_SOC*.cfg   (note: WMT_SOC_TONGA_EPA.cfg / WMT_SOC_TONGA_IPA.cfg
+                             confirm the device codename "tonga")
+  Stock ships firmware for BOTH touch SKUs (one image serves both hardware variants).
+
+===============================================================================
+3. RECOVERY vendor/firmware  (recovery/root/vendor/firmware/)
+===============================================================================
+  ILITEK_FW_TM_9883A          358,761 B
+      sha256 e185e7c4b672494233f08404760bd7339d0c34fe6b0f9bddfe4bf15211433e28
+      identical to the stock file of the same name (confirmed by sha256)
+  (nothing else)
+
+===============================================================================
+4. PRESENCE MATRIX
+===============================================================================
+                                     stock vendor/firmware     recovery ramdisk
+  ICNL9916.bin  (Chipone SKU)             present                 ABSENT
+  ICNL9911.bin  (Chipone, alt hwid)       present                 ABSENT
+  ILITEK_FW_TM_9883A (Ilitek SKU)         present                 present (byte-identical)
+  novatek_ts_fw.bin                       present                 ABSENT (nova_0flash_mmi.ko
+                                                                  is not shipped either)
+
+  recovery/root/vendor/lib/modules/ contains only:
+      ili9882_mmi.ko           604,152 B   (19 bytes differ from stock; vermagic g2991a7c6cb9d)
+      icnl9916_tddi_mmi.ko     327,040 B   (19 bytes differ from stock; vermagic g2991a7c6cb9d)
+
+===============================================================================
+5. INTERPRETATION
+===============================================================================
+- For the **Ilitek (ILI9883A)** SKU, recovery is complete: module + exact firmware present,
+  and the firmware file was taken from the stock image -> the maintainer targeted this SKU.
+- For the **Chipone (ICNL9916)** SKU, recovery has the module but not ICNL9916.bin.
+  INFERRED non-fatal for probing (update-only path), but firmware *updates* for that SKU are
+  impossible in recovery, and any code path that treats "no file" as fatal is unverified.
+- The PKG_SKU itself cannot be determined from the firmware dump: stock ships both variants
+  and both panel names are compiled into the kernel. Confirm on-device:
+      dmesg | grep -E 'CTS-I2CDrv|ILITEK'      (prints active_panel_name / the bail-out reason)
+      cat /proc/cmdline                        (contains the selected mipi_mot_vid_* token)
