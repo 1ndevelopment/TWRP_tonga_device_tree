@@ -52,17 +52,34 @@ ili9882_mmi.ko  (Ilitek) — request_firmware() with a panel-selected name.
   ILITEK_FW_TM_9883A          358,761 B
       sha256 e185e7c4b672494233f08404760bd7339d0c34fe6b0f9bddfe4bf15211433e28
       identical to the stock file of the same name (confirmed by sha256)
-  (nothing else)
+  ICNL9916.bin                 66,316 B                      <- ADDED (Chipone SKU)
+      sha256 b0e836172fde1088517a5806fc7fa6fcafd6231888140e5019185f3e0e124914
+  ICNL9911.bin                 60,772 B                      <- ADDED (Chipone, alt hwid)
+      sha256 7e0c145465584e8036cebcb3ffe88b4b6b1408d665f1e2b17786c9d077f45ba2
+      both byte-identical to the stock vendor/firmware files (confirmed by sha256)
+  novatek firmware is deliberately NOT added: the module that would request it
+  (nova_0flash_mmi.ko) cannot be loaded by the recovery kernel (vermagic
+  gbaa59638869e vs g2991a7c6cb9d) and no relinked copy exists.
+
+  These files DO reach the built recovery image: TWRP's build copies
+  $(TARGET_DEVICE_DIR)/recovery/root into the recovery ramdisk root
+  (TeamWin/android_build android-12.1, core/Makefile:2073-2080 and :2258
+  `cp -rf $(item) $(TARGET_RECOVERY_OUT)/` -> $(TARGET_RECOVERY_ROOT_OUT)/).
+  The commented-out PRODUCT_COPY_FILES line in twrp_tonga.mk:34 is redundant.
+  The firmware search path is confirmed from the stock DTB: /chosen/bootargs
+  ends with "firmware_class.path=/vendor/firmware".
 
 ===============================================================================
 4. PRESENCE MATRIX
 ===============================================================================
                                      stock vendor/firmware     recovery ramdisk
-  ICNL9916.bin  (Chipone SKU)             present                 ABSENT
-  ICNL9911.bin  (Chipone, alt hwid)       present                 ABSENT
+  ICNL9916.bin  (Chipone SKU)             present                 present (byte-identical)  [added]
+  ICNL9911.bin  (Chipone, alt hwid)       present                 present (byte-identical)  [added]
   ILITEK_FW_TM_9883A (Ilitek SKU)         present                 present (byte-identical)
   novatek_ts_fw.bin                       present                 ABSENT (nova_0flash_mmi.ko
-                                                                  is not shipped either)
+                                                                  is not shipped either, and
+                                                                  a stock .ko cannot be
+                                                                  loaded by the recovery kernel)
 
   recovery/root/vendor/lib/modules/ contains only:
       ili9882_mmi.ko           604,152 B   (19 bytes differ from stock; vermagic g2991a7c6cb9d)
@@ -71,12 +88,21 @@ ili9882_mmi.ko  (Ilitek) — request_firmware() with a panel-selected name.
 ===============================================================================
 5. INTERPRETATION
 ===============================================================================
-- For the **Ilitek (ILI9883A)** SKU, recovery is complete: module + exact firmware present,
-  and the firmware file was taken from the stock image -> the maintainer targeted this SKU.
-- For the **Chipone (ICNL9916)** SKU, recovery has the module but not ICNL9916.bin.
-  INFERRED non-fatal for probing (update-only path), but firmware *updates* for that SKU are
-  impossible in recovery, and any code path that treats "no file" as fatal is unverified.
-- The PKG_SKU itself cannot be determined from the firmware dump: stock ships both variants
+- The **Ilitek (ILI9883A)** SKU was complete before this change: module + exact firmware.
+- The **Chipone (ICNL9916)** SKU was missing ICNL9916.bin / ICNL9911.bin; both are now
+  shipped in the recovery ramdisk. INFERRED non-fatal for probing even when absent
+  (update-only path), so this closes a firmware-update gap rather than a proven
+  cause of the dead touchscreen.
+- Only TWO panel SKUs exist for tonga: the kernel LCM drivers are
+  mipi_mot_vid_tm_icnl9916_652_hdp and mipi_mot_vid_tm_ili9883a_652_hdp, and
+  vendor/etc/motorola/12m/ carries configs for exactly those two families
+  (chipone-tianma_icnl9916..., chipone-txd_icnl9911c..., TM655_driver_Command_ilitek_tm.ini).
+  There is no third (novatek) SKU to support. INFERRED from those two sources.
+- The 12m .ini files are factory-test configs, not probe inputs: neither module
+  references /vendor/etc/motorola (ili9882_mmi.ko only references mp*.ini /
+  /sdcard/ILITEK_FW_* test paths; icnl9916_tddi_mmi.ko only /vendor/firmware/*.bin).
+- The SKU itself cannot be determined from the firmware dump: stock ships both variants
   and both panel names are compiled into the kernel. Confirm on-device:
       dmesg | grep -E 'CTS-I2CDrv|ILITEK'      (prints active_panel_name / the bail-out reason)
       cat /proc/cmdline                        (contains the selected mipi_mot_vid_* token)
+  Both are now also captured automatically into /tmp/touch_dbg.log (touch-diag service).

@@ -1,5 +1,11 @@
 # Final Report — tonga TWRP touch/USB fix
 
+> **Partly superseded** — a later firmware audit (see `docs/stock-audit.md`) disproved the
+> "module load order" item below: both drivers self-select from the `mipi_mot_vid_*` token in
+> `/proc/cmdline` and the wrong one returns `-1` before binding, so order is inert. The
+> vermagic item was also resolved (the recovery copies match the recovery kernel). The
+> firmware audit is authoritative where the two disagree.
+
 ## Summary
 
 Branch `fix/touch-usb-recovery` with 6 commits. FIRMWARE_DIR is not set,

@@ -12,7 +12,8 @@ file: fw/work/fs/vendor_a/lib/modules/modules.load   (loaded by AOSP libmodprobe
   goodix_mtk_tee.ko
   icnl9916_tddi_mmi.ko        <-- touch #1
   ili9882_mmi.ko              <-- touch #2
-  nova_0flash_mmi.ko          <-- touch #3 (novatek, not present on tonga's dtbo? see below)
+  nova_0flash_mmi.ko          <-- touch-adjacent module; NOT a tonga touch driver: no of:
+                                  alias, and tonga has only two LCM names (see §4)
   abov_sar_mmi_overlay_7ch.ko
   utags.ko
   mmi_info.ko
@@ -41,12 +42,21 @@ file: fw/work/fs/vendor_a/lib/modules/modules.dep
 file: recovery/root/init.recovery.mt6765.rc
 
   on boot
-      insmod /vendor/lib/modules/ili9882_mmi.ko      <-- reversed vs stock
+      insmod /vendor/lib/modules/ili9882_mmi.ko
       insmod /vendor/lib/modules/icnl9916_tddi_mmi.ko
 
-Only these two modules exist in recovery/root/vendor/lib/modules/.
-No mmi_info.ko / utags.ko / nova_0flash_mmi.ko are shipped (not needed: no module
-dependencies exist, verified in modules.dep).
+Only these two modules exist in recovery/root/vendor/lib/modules/ (both relinked for the
+recovery kernel: vermagic 4.19.191-g2991a7c6cb9d; the stock ones are ...-gbaa59638869e and
+cannot be loaded by it). No mmi_info.ko / utags.ko / nova_0flash_mmi.ko are shipped — not
+needed: no module dependencies exist (verified in modules.dep), and a stock .ko could not be
+loaded anyway (vermagic).
+
+Also present in the ramdisk: vendor/firmware/ILITEK_FW_TM_9883A, plus ICNL9916.bin and
+ICNL9911.bin (added). See docs/touch-firmware-files.txt.
+
+The rc comment claiming a load order mattered was removed (the order is inert, see §3).
+insmod is deliberate: TW_LOAD_VENDOR_MODULES would load the stock modules from the mounted
+vendor partition, which do not match the recovery kernel.
 
 ===============================================================================
 3. ORDER DOES NOT MATTER — the drivers self-select on the kernel cmdline
@@ -86,21 +96,26 @@ each wrong driver returns -1 before binding, so neither driver can "block" the o
 ===============================================================================
 grep "mipi_mot_vid_" : 0 hits in fw/out/boot.img, fw/work/boot/dtb, fw/out/dtbo.img,
                        /chosen/bootargs.
-appended DTB /chosen/bootargs:
-  console=tty0 console=ttyS0,921600n1 vmalloc=500M slub_debug=OFZPU page_owner=on
-  swiotlb=noforce androidboot.hardware=mt...
+appended DTB /chosen/bootargs (full string):
+  console=tty0 console=ttyS0,921600n1 vmalloc=500M slub_debug=OFZPU page_owner=on swiotlb=noforce
+  androidboot.hardware=mt6765 maxcpus=8 loop.max_part=7 firmware_class.path=/vendor/firmware
 stock boot.img header cmdline : bootopt=64S3,32N2,64N2 buildvariant=user
 BoardConfig BOARD_KERNEL_CMDLINE : bootopt=64S3,32N2,64N2      (buildvariant dropped)
 
 inferred: the token is appended to the runtime kernel cmdline at boot by LK.
           (LK is out of scope for this audit -> not verified.)
-unknown : whether the token is present when booting this recovery image.
-check   : cat /proc/cmdline   (in TWRP and in stock)
+inferred: if LK appends it, TWRP gets it too — the same stock LK boots both stock Android and
+          this recovery image, and the token is in none of the partitions this tree writes.
+          Still unknown until read on the device.
+check   : cat /proc/cmdline   (in TWRP and in stock; also logged to /tmp/touch_dbg.log now)
 
 Kernel LCM driver names that can legitimately appear in that token:
   mipi_mot_vid_tm_icnl9916_652_hdp
   mipi_mot_vid_tm_ili9883a_652_hdp
 (both present in the stock kernel AND in prebuilt/Image.gz)
+=> exactly two touch SKUs exist for tonga; the stock vendor's own per-panel configs
+   (etc/motorola/12m/: chipone-...icnl9916..., chipone-...icnl9911c..., TM655_...ilitek_tm.ini)
+   cover the same two families and nothing else (inferred).
 
 ===============================================================================
 5. PANEL / dts overlay facts

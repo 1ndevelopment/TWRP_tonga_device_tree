@@ -78,6 +78,13 @@ mipi_mot_vid_tm_ili9883a_652_hdp   / tianma_ili9883a_hdp_vid
 one with **Chipone ICNL9916** touch, one with **Ilitek ILI9883A** touch. Both LCM names are also
 present in the recovery (`prebuilt`) kernel.
 
+Corroborated by Moto's own per-panel configs in the stock vendor image,
+`etc/motorola/12m/`: `chipone-tianma_icnl9916_hdp_vid-ICNL9916-tonga.ini`,
+`chipone-txd_icnl9911c_hdp_vid-ICNL9911C-tonga.ini`, `TM655_driver_Command_ilitek_tm.ini` — the same
+two families and nothing else, so **there is no third (novatek) SKU** to support (inferred from
+these two independent sources). Those `.ini` files are factory-test configs and are **not** read at
+probe time: neither module references `/vendor/etc/motorola`.
+
 ### 4.2 Touch node lives in dtbo, not in boot.img's DTB
 
 `dtbo.img` overlay `fragment@22`/`fragment@24` targets the base DTB symbol `touch`:
@@ -169,6 +176,75 @@ IC keeps its flashed firmware otherwise).
 
 Full stock-vs-recovery presence matrix: `docs/touch-firmware-files.txt`.
 
+### 4.6 What this change did, and the residual unknowns
+
+State of `recovery/root/` (touch):
+
+| item | before | after |
+|---|---|---|
+| `vendor/lib/modules/ili9882_mmi.ko`, `icnl9916_tddi_mmi.ko` | present, relinked for the recovery kernel | **unchanged** — already correct |
+| `vendor/firmware/ICNL9916.bin`, `ICNL9911.bin` | **absent** | added, byte-identical to stock (sha256 in `docs/touch-firmware-files.txt`) |
+| `init.recovery.mt6765.rc` | `insmod` both modules under `on boot`; comment claimed load order mattered | same trigger and commands; comment corrected; diag service now also logs `/proc/cmdline` and greps `version magic` |
+
+The two drivers themselves were already in the device tree, so none were added. Two properties of
+that placement were verified rather than assumed:
+
+1. **The files do reach the built recovery ramdisk.** TWRP's build copies
+   `$(TARGET_DEVICE_DIR)/recovery/root` into it — `TeamWin/android_build` (android-12.1)
+   `core/Makefile:2073-2080` and the copy at `:2258`, `cp -rf $(item) $(TARGET_RECOVERY_OUT)/`,
+   where `TARGET_RECOVERY_ROOT_OUT = $(TARGET_RECOVERY_OUT)/root` (confirmed from source). The
+   commented-out `PRODUCT_COPY_FILES` line at `twrp_tonga.mk:34` is therefore redundant, not a defect.
+2. **`/vendor/firmware` is the firmware search path.** The stock DTB's `/chosen/bootargs` ends with
+   `firmware_class.path=/vendor/firmware`, so the ramdisk copies are exactly what `request_firmware`
+   resolves (confirmed).
+
+Residual unknowns — none of these can be settled from the firmware dump:
+
+- **The cmdline gate (§4.4) is probably satisfied.** The `mipi_mot_vid_*` token is in none of the
+  partitions this tree writes, so it must be appended by LK, and the same stock LK boots both stock
+  Android and TWRP. Still `unknown` until `cat /proc/cmdline` is read.
+- **/vendor shadowing.** `recovery.fstab:3` mounts a `vendor` partition at `/vendor`. If TWRP mounts
+  it before the `insmod` lines run, the ramdisk copies are hidden and the *stock* modules
+  (vermagic `gbaa59638869e`) get loaded against the recovery kernel (`g2991a7c6cb9d`), which fails
+  with a version-magic error. The diag service now greps `version magic` to catch exactly this.
+- **Load timing.** Stock loads this same module set from `init.mmi.overlay.rc` under `on early-init`;
+  the tree loads it under `on boot`. Left unchanged: a bare `insmod` is proven only at `on boot`,
+  and TWRP is expected to pick up a late-registering input device. (inferred, unverified)
+### 4.7 Probe path — there is no second gate (REA, both modules)
+
+Full detail: `fw/work/probe-path-notes.md`. What runs **after** the cmdline gate:
+
+`icnl9916` (`cts_driver_probe` → `cts_probe_device`): workqueue alloc → DT `chipone,irq-gpio`/`rst-gpio`/
+`x-res`/`y-res` → `input_register_device("chipone-tddi")` → `gpio_request_one("chipone-tddi-int"/
+"-rst")` → SPI read of the chip hwid in program mode, which must match an entry of
+`cts_device_hwdatas[]` (`0x990100`, `0x990110`, `0x991110`, `0x990160`, matched by hwid **or** fwid) →
+`fb_register_client` → `request_threaded_irq("chipone-tddi")`. Every one of those is fatal. The tool
+node `/proc/icn85xx_tool`, the sysfs class, the charger-detect path and the firmware request are
+warnings or post-bind only — in particular `cts_request_firmware` is only reached from
+`cts_firmware_upgrade_work`, queued *after* probe returns 0, which confirms §4.5's inference.
+
+`ili9882` (`ilitek_spi_probe` → `ilitek_plat_probe` → `ili_tddi_init`): the DRM gate
+(`of_drm_find_panel`) only runs if the touch node has `panel`/`panel2` phandles — it does not (§4.2),
+so that path is **inert on this board** → full-duplex SPI check → `ili_core_spi_setup` → DT
+`touch,irq-gpio`/`reset-gpio` + `gpio_request("TP_INT"/"TP_RESET")` + `devm_request_threaded_irq
+("ilitek")` → `ili_ic_dummy_check()` → FW kthread. Fatal, same as above; firmware, sysfs, netlink and
+pinctrl (`pmx_ts_int_*`, absent from the node) are optional.
+
+**Confirmed:** no gate exists that a normal boot satisfies and recovery does not — both boots use the
+same bootloader-applied `dtbo` and both kernels have the needed features (`mediatek,mt6765-spi` is
+present in `Image.prebuilt`). The only recovery-specific failure points are:
+
+1. the cmdline token (§4.4) — the only plausible one;
+2. the TDDI chip having to answer a SPI read in program mode, i.e. panel power/reset state left by
+   the bootloader — not judgeable offline;
+3. GPIO `&pio` 10 / `0xa4` already claimed — nothing else in this ramdisk claims them (the two touch
+   modules are the only added consumers; `touch-diag` only reads dmesg).
+
+One firmware nuance worth knowing: `is_filesystem_mounted("/vendor/firmware/ICNL9916.bin")` compares
+the file's vfsmount with `/`, so the icnl firmware update only runs when `/vendor` is a **separate
+mount** — in recovery, i.e. only if TWRP mounts the vendor partition, which is also the condition that
+would shadow the ramdisk modules (§4.6). Either way it is non-fatal: it is queued work, not a bind gate.
+
 ## 5. USB
 
 ### 5.1 Controller
@@ -230,12 +306,16 @@ of value `2` were not verified against the driver.
 
 1. `cat /proc/cmdline` in TWRP **and** in stock — must contain the `mipi_mot_vid_…` panel token, and
    it must match the SKU (`…icnl9916…` or `…ili9883a…`). If absent → touch root cause confirmed.
-2. `ls /sys/class/udc/` in TWRP — expect `musb-hdrc`.
-3. `ls /config/usb_gadget/g1/` and `cat /config/usb_gadget/g1/UDC` in TWRP.
-4. `dmesg | grep -E 'CTS-I2CDrv|ILITEK|mipi_mot_vid_|musb'` — the driver gate prints its reason
-   verbatim (`chipone active panel not found!` / `Not chipone panel!` / `Not ilitek panel!`).
-5. Which SKU the unit is (Chipone vs Ilitek) — determines whether the missing
-   `/vendor/firmware/ICNL9916.bin` in recovery matters.
+   Now also captured automatically in `/tmp/touch_dbg.log` by the `touch-diag` service.
+2. `cat /tmp/touch_dbg.log` in TWRP — the drivers print their own reason verbatim:
+   `CTS-I2CDrv chipone active panel not found!` / `Not chipone panel!` (icnl9916) and the
+   `ILITEK: … ilitek active panel not found!` / `Not ilitek panel!` equivalents, or the hardware
+   failures `CTS-Core Device hwid: %06x fwid: %04x not found`, `CTS-Core Enter program mode failed`,
+   `ILITEK Driver probe failed`. Which of these appears decides which of the ranked causes it is.
+3. `ls /sys/class/udc/` in TWRP — expect `musb-hdrc`.
+4. `ls /config/usb_gadget/g1/` and `cat /config/usb_gadget/g1/UDC` in TWRP.
+5. Which SKU the unit is (Chipone vs Ilitek) — both are now fully supplied in recovery, so this only
+   tells you which firmware was meant to be used.
 
 ## 7. Previously `TODO(verify)` rows — now resolved
 

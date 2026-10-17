@@ -31,7 +31,7 @@ service mtk.plpath.utils.link /system/bin/mtk_plpath_utils
     disabled
     seclabel u:r:recovery:s0
 
-service touch-diag /system/bin/sh -c "dmesg | grep -E 'ili9882|icnl9916|ts_mmi|Unknown symbol|Exec format|insmod' > /tmp/touch_dbg.log"
+service touch-diag /system/bin/sh -c "dmesg | grep -E 'CTS-|ILITEK|ilitek|icnl9916|ili9882|chipone|active panel|not found|Unknown symbol|version magic|disagrees about version|Exec format|insmod' > /tmp/touch_dbg.log; echo CMDLINE: >> /tmp/touch_dbg.log; cat /proc/cmdline >> /tmp/touch_dbg.log"
     class late_start
     user root
     group root
@@ -42,8 +42,14 @@ on boot
     start boot-hal-1-2
     start health-hal-2-1
 
-    # Touch panel modules — load in dependency order
-    # TODO(verify): order and vermagic match unconfirmed (FIRMWARE_DIR not set)
+    # Touch panel drivers: the stock tonga drivers, relinked for the recovery
+    # kernel (their vermagic is ...-g2991a7c6cb9d, the vendor partition copies
+    # are ...-gbaa59638869e and cannot be loaded by this kernel), so insmod
+    # these ramdisk copies rather than modprobe from /vendor/lib/modules.
+    # Load order does not matter: each driver self-selects the panel from the
+    # "mipi_mot_vid_*" token in /proc/cmdline and returns -1 before binding if
+    # the panel is not its own (stock loads both the same way, in
+    # init.mmi.overlay.rc).
     insmod /vendor/lib/modules/ili9882_mmi.ko
     insmod /vendor/lib/modules/icnl9916_tddi_mmi.ko
 
